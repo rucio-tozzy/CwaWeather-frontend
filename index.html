@@ -325,7 +325,7 @@
             <div style="display:flex; align-items:center; gap:8px;">
             <div class="location-pill">
                 <span class="loc-icon">📍</span>
-                <span id="locName" class="loc-name">高雄</span>
+                <span id="locName" class="loc-name">臺北市</span>
                 <select id="citySelect" class="city-select" aria-label="選擇城市" style="display:none">
                     <option>載入城市...</option>
                 </select>
@@ -392,7 +392,7 @@
             return "深夜";
         }
 
-        function pickCityData(allData, preferred = /高雄|kaohsiung/i) {
+        function pickCityData(allData, preferred = /台北|臺北|taipei/i) {
             if (!allData) return null;
             if (allData.forecasts) return allData;
 
@@ -451,6 +451,55 @@
             }
 
             return out;
+        }
+
+        // --- geolocation helpers ------------------------------------------------
+        function haversineDistance(lat1, lon1, lat2, lon2) {
+            const toRad = d => d * Math.PI / 180;
+            const R = 6371; // km
+            const dLat = toRad(lat2 - lat1);
+            const dLon = toRad(lon2 - lon1);
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c;
+        }
+
+        function getCoordsFromCity(item) {
+            if (!item) return null;
+            // common fields
+            const maybe = (o, name) => (o && typeof o[name] !== 'undefined') ? o[name] : undefined;
+            const candidates = [ 'lat', 'latitude', 'latLng', 'locationLat', 'y', 'coordLat' ];
+            const candidatesLon = [ 'lon', 'lng', 'longitude', 'locationLon', 'x', 'coordLon' ];
+
+            for (const [i, k] of candidates.entries()) {
+                const v = maybe(item, k);
+                const w = maybe(item, candidatesLon[i]);
+                // allow strings that look like numbers (e.g. "23.5")
+                const n1 = (typeof v === 'number') ? v : (typeof v === 'string' ? parseFloat(v) : NaN);
+                const n2 = (typeof w === 'number') ? w : (typeof w === 'string' ? parseFloat(w) : NaN);
+                if (Number.isFinite(n1) && Number.isFinite(n2)) return { lat: n1, lon: n2 };
+            }
+
+            // nested possibilities
+            if (item.location && typeof item.location.lat === 'number' && typeof item.location.lon === 'number') return { lat: item.location.lat, lon: item.location.lon };
+            if (item.geometry && Array.isArray(item.geometry.coordinates)) {
+                // GeoJSON [lon, lat]
+                const coords = item.geometry.coordinates;
+                if (coords.length >= 2 && typeof coords[0] === 'number' && typeof coords[1] === 'number') return { lat: coords[1], lon: coords[0] };
+            }
+
+            return null;
+        }
+
+        function getPositionPromise(timeout = 5000) {
+            return new Promise((resolve, reject) => {
+                if (!navigator.geolocation) return reject(new Error('Geolocation not supported'));
+                let resolved = false;
+                const onSuccess = pos => { if (!resolved) { resolved = true; resolve(pos); } };
+                const onFail = err => { if (!resolved) { resolved = true; reject(err); } };
+                navigator.geolocation.getCurrentPosition(onSuccess, onFail, { enableHighAccuracy: true, maximumAge: 0, timeout });
+                setTimeout(() => { if (!resolved) { resolved = true; reject(new Error('geolocation timeout')); } }, timeout + 200);
+            });
         }
 
         function renderWeather(data) {
@@ -546,15 +595,87 @@
                         selectEl.style.display = 'inline-block';
                         locNameEl.style.display = 'none';
                         selectEl.innerHTML = cities.map((c, i) => `<option value="${i}">${c.label}</option>`).join('');
-                        // 優先選擇高雄（若存在）
-                        const preferred = cities.findIndex(c => /高雄|kaohsiung/i.test(c.label) || (c.data && c.data.city && /高雄|kaohsiung/i.test(c.data.city)));
-                        selectEl.selectedIndex = preferred >= 0 ? preferred : 0;
-                        // render initial
+
+                        // 預設選臺北市（若存在），否則 0
+                        const defaultIdx = cities.findIndex(c => /台北|臺北|Taipei/i.test(c.label) || (c.data && ((c.data.city && /台北|臺北|Taipei/i.test(c.data.city)) || (c.data.name && /台北|臺北|Taipei/i.test(c.data.name)))));
+                        selectEl.selectedIndex = defaultIdx >= 0 ? defaultIdx : 0;
+                        // 先用預設渲染，接著嘗試用 geolocation 更新成最近城市
                         renderWeather(cities[selectEl.selectedIndex].data);
+
+                        // 嘗試取得使用者位置（若權限允許）並把選單切到最近城市
+                        getPositionPromise(5000).then(pos => {
+                            console.debug('geolocation success', pos && pos.coords);
+                            try {
+                                const { latitude, longitude } = pos.coords;
+                                let bestIdx = -1;
+                                let bestDist = Infinity;
+                                cities.forEach((c, idx) => {
+                                    const coords = getCoordsFromCity(c.data);
+                                    if (!coords) return;
+                                    const d = haversineDistance(latitude, longitude, coords.lat, coords.lon);
+                                    if (d < bestDist) { bestDist = d; bestIdx = idx; }
+                                });
+
+                                console.debug('computed bestIdx,dist', bestIdx, bestDist);
+                                if (bestIdx >= 0) {
+                                    selectEl.selectedIndex = bestIdx;
+                                    if (locNameEl) locNameEl.textContent = cities[bestIdx].label;
+                                    renderWeather(cities[bestIdx].data);
+                                } else {
+                                    console.debug('no coords found among cities; trying known-city fallback nearest:', nearestKnown, nearestDist);
+                                    // 若沒可比對座標資料，嘗試用「已知城市座標」去配對 label
+                                    const known = {
+                                        '臺北': { lat: 25.0330, lon: 121.5654 },
+                                        '高雄': { lat: 22.6273, lon: 120.3014 },
+                                        '台中': { lat: 24.1477, lon: 120.6736 },
+                                        '台南': { lat: 23.0000, lon: 120.2270 },
+                                        '新北': { lat: 25.0169, lon: 121.4628 },
+                                        '桃園': { lat: 24.9937, lon: 121.3009 },
+                                        '基隆': { lat: 25.1280, lon: 121.7410 },
+                                        '屏東': { lat: 22.5510, lon: 120.5480 },
+                                        '花蓮': { lat: 23.9760, lon: 121.6040 },
+                                        '宜蘭': { lat: 24.7590, lon: 121.7570 },
+                                        '嘉義': { lat: 23.4800, lon: 120.4490 }
+                                    };
+
+                                    let nearestKnown = null;
+                                    let nearestDist = Infinity;
+                                    Object.keys(known).forEach(k => {
+                                        const d = haversineDistance(latitude, longitude, known[k].lat, known[k].lon);
+                                        if (d < nearestDist) { nearestDist = d; nearestKnown = k; }
+                                    });
+
+                                    if (nearestKnown) {
+                                        // 找到最接近的已知城市名後，嘗試在城市列表中找有該名稱的項目
+                                        const foundIdx = cities.findIndex(c => new RegExp(nearestKnown, 'i').test(c.label));
+                                        if (foundIdx >= 0) {
+                                            selectEl.selectedIndex = foundIdx;
+                                            if (locNameEl) locNameEl.textContent = cities[foundIdx].label;
+                                            renderWeather(cities[foundIdx].data);
+                                        } else {
+                                            selectEl.selectedIndex = defaultIdx >= 0 ? defaultIdx : 0;
+                                            renderWeather(cities[selectEl.selectedIndex].data);
+                                        }
+                                    } else {
+                                        selectEl.selectedIndex = defaultIdx >= 0 ? defaultIdx : 0;
+                                        renderWeather(cities[selectEl.selectedIndex].data);
+                                    }
+                                }
+                            } catch (e) {
+                                selectEl.selectedIndex = defaultIdx >= 0 ? defaultIdx : 0;
+                            }
+                        }).catch(() => {
+                            // 定位失敗、逾時或權限拒絕 → 回到臺北預設
+                            selectEl.selectedIndex = defaultIdx >= 0 ? defaultIdx : 0;
+                            renderWeather(cities[selectEl.selectedIndex].data);
+                        });
 
                         selectEl.onchange = () => {
                             const idx = parseInt(selectEl.value, 10);
-                            if (cities[idx]) renderWeather(cities[idx].data);
+                            if (cities[idx]) {
+                                if (locNameEl) locNameEl.textContent = cities[idx].label;
+                                renderWeather(cities[idx].data);
+                            }
                         };
                     } else if (cities.length === 1) {
                         selectEl.style.display = 'none';
