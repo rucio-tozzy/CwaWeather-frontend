@@ -82,6 +82,18 @@
             border-radius: 12px;
         }
 
+        .geo-status {
+            font-size: 0.8rem;
+            color: #fffbe9;
+            opacity: 0.95;
+            margin-left: 10px;
+            background: linear-gradient(90deg, rgba(217,180,74,0.14), rgba(0,0,0,0.08));
+            padding: 4px 8px;
+            border-radius: 8px;
+            border: 1px solid rgba(217,180,74,0.18);
+            display: none;
+        }
+
         /* 城市下拉 */
         .city-select {
             margin-left: 12px;
@@ -332,7 +344,10 @@
                 <span class="loc-suffix"> — 日之呼吸</span>
             </div>
         </div>
-        <div id="updateTime" class="update-pill">更新中...</div>
+        <div style="display:flex; align-items:center; gap:8px;">
+            <div id="updateTime" class="update-pill">更新中...</div>
+            <div id="geoStatus" class="geo-status" aria-hidden="true"></div>
+        </div>
     </div>
 
     <div class="container" id="mainContent" style="display: none;">
@@ -480,13 +495,46 @@
                 if (Number.isFinite(n1) && Number.isFinite(n2)) return { lat: n1, lon: n2 };
             }
 
-            // nested possibilities
+            // nested possibilities + recursive search for keys containing lat/lon
             if (item.location && typeof item.location.lat === 'number' && typeof item.location.lon === 'number') return { lat: item.location.lat, lon: item.location.lon };
             if (item.geometry && Array.isArray(item.geometry.coordinates)) {
                 // GeoJSON [lon, lat]
                 const coords = item.geometry.coordinates;
                 if (coords.length >= 2 && typeof coords[0] === 'number' && typeof coords[1] === 'number') return { lat: coords[1], lon: coords[0] };
             }
+
+            // 深度搜尋：找出包含 lat/lon 或類似名稱的數字 pair
+            function findLatLonDeep(obj) {
+                if (!obj || typeof obj !== 'object') return null;
+                if (Array.isArray(obj) && obj.length >= 2 && typeof obj[0] === 'number' && typeof obj[1] === 'number') {
+                    const a = obj[0], b = obj[1];
+                    if (a >= -90 && a <= 90 && b >= -180 && b <= 180) return { lat: a, lon: b };
+                    if (b >= -90 && b <= 90 && a >= -180 && a <= 180) return { lat: b, lon: a };
+                }
+
+                for (const key of Object.keys(obj)) {
+                    const v = obj[key];
+                    if (typeof v === 'number') {
+                        const kLower = key.toLowerCase();
+                        if (kLower.includes('lat')) {
+                            const lonKey = Object.keys(obj).find(kk => kk.toLowerCase().includes('lon') || kk.toLowerCase().includes('lng'));
+                            if (lonKey && typeof obj[lonKey] === 'number') return { lat: v, lon: obj[lonKey] };
+                        }
+                        if (kLower.includes('lon') || kLower.includes('lng')) {
+                            const latKey = Object.keys(obj).find(kk => kk.toLowerCase().includes('lat'));
+                            if (latKey && typeof obj[latKey] === 'number') return { lat: obj[latKey], lon: v };
+                        }
+                    }
+                    if (typeof v === 'object') {
+                        const found = findLatLonDeep(v);
+                        if (found) return found;
+                    }
+                }
+                return null;
+            }
+
+            const deepFound = findLatLonDeep(item);
+            if (deepFound) return deepFound;
 
             return null;
         }
@@ -535,6 +583,8 @@
                             </div>
                         </div>
                     `;
+                        const gs = document.getElementById('geoStatus');
+                        if (gs) { gs.textContent = '定位成功'; gs.style.display='inline-block'; setTimeout(()=>gs.style.display='none',6000); }
 
             // 2. 渲染稍後預報 (包含明天判斷)
             const scrollContainer = document.getElementById('futureForecasts');
@@ -616,13 +666,16 @@
                                     if (d < bestDist) { bestDist = d; bestIdx = idx; }
                                 });
 
-                                console.debug('computed bestIdx,dist', bestIdx, bestDist);
+                                console.debug('computed bestIdx,dist', bestIdx, bestDist, 'citiesHaveCoords?', cities.map(c=>!!getCoordsFromCity(c.data)));
+                                const gs = document.getElementById('geoStatus');
                                 if (bestIdx >= 0) {
                                     selectEl.selectedIndex = bestIdx;
                                     if (locNameEl) locNameEl.textContent = cities[bestIdx].label;
                                     renderWeather(cities[bestIdx].data);
+                                    if (gs) { gs.textContent = `已定位：${cities[bestIdx].label} （距離 ${bestDist.toFixed(1)} km）`; gs.style.display='inline-block'; setTimeout(()=>gs.style.display='none',6000); }
                                 } else {
-                                    console.debug('no coords found among cities; trying known-city fallback nearest:', nearestKnown, nearestDist);
+                                    // 若沒可比對座標資料，先印出城市列表看看有哪些 label
+                                    console.debug('no coords found among cities; will try known-city fallback. city labels:', cities.map(c=>c.label));
                                     // 若沒可比對座標資料，嘗試用「已知城市座標」去配對 label
                                     const known = {
                                         '臺北': { lat: 25.0330, lon: 121.5654 },
@@ -646,15 +699,54 @@
                                     });
 
                                     if (nearestKnown) {
-                                        // 找到最接近的已知城市名後，嘗試在城市列表中找有該名稱的項目
-                                        const foundIdx = cities.findIndex(c => new RegExp(nearestKnown, 'i').test(c.label));
-                                        if (foundIdx >= 0) {
-                                            selectEl.selectedIndex = foundIdx;
-                                            if (locNameEl) locNameEl.textContent = cities[foundIdx].label;
-                                            renderWeather(cities[foundIdx].data);
+                                        // 支援中英文別名比對
+                                        const synonyms = {
+                                            '臺北': ['臺北', '台北', 'Taipei'],
+                                            '新北': ['新北', 'New Taipei', '新北市'],
+                                            '基隆': ['基隆', 'Keelung', 'Keelung City', '基隆市'],
+                                            '宜蘭': ['宜蘭', 'Yilan', '宜蘭縣', '宜蘭市'],
+                                            '桃園': ['桃園', 'Taoyuan', 'Taoyuan City', '桃園市'],
+                                            '新竹': ['新竹', 'Hsinchu', 'Hsinchu City', '新竹市'],
+                                            '苗栗': ['苗栗', 'Miaoli'],
+                                            '台中': ['台中', '臺中', 'Taichung', 'Taichung City'],
+                                            '彰化': ['彰化', 'Changhua'],
+                                            '南投': ['南投', 'Nantou'],
+                                            '雲林': ['雲林', 'Yunlin'],
+                                            '嘉義': ['嘉義', 'Chiayi', 'Chiayi City', '嘉義市'],
+                                            '台南': ['台南', '臺南', 'Tainan', 'Tainan City'],
+                                            '高雄': ['高雄', 'Kaohsiung', 'Kaohsiung City', '高雄市'],
+                                            '屏東': ['屏東', 'Pingtung'],
+                                            '花蓮': ['花蓮', 'Hualien'],
+                                            '台東': ['台東', '臺東', 'Taitung'],
+                                            '澎湖': ['澎湖', 'Penghu'],
+                                            '金門': ['金門', 'Kinmen'],
+                                            '連江': ['連江', 'Matsu']
+                                        };
+
+                                        const aliases = synonyms[nearestKnown] || [nearestKnown];
+                                        function matchesAlias(c, aliases) {
+                                            const fields = [c.label, c.data && (c.data.city || c.data.name || c.data.locationName), JSON.stringify(c.data)].filter(Boolean).join('||').toLowerCase();
+                                            return aliases.some(a => fields.includes(a.toLowerCase()));
+                                        }
+
+                                        const foundIdx = cities.findIndex(c => matchesAlias(c, aliases));
+                                        // extra fallback: try partial match by first two chars (e.g., 基隆 -> 基隆市 vs 基隆)
+                                        let foundIdx2 = -1;
+                                        if (foundIdx < 0) {
+                                            const simple = nearestKnown.slice(0, 2).toLowerCase();
+                                            foundIdx2 = cities.findIndex(c => (c.label && c.label.toLowerCase().includes(simple)) || (c.data && c.data.city && c.data.city.toLowerCase().includes(simple)) || (c.data && c.data.name && c.data.name.toLowerCase().includes(simple)));
+                                        }
+                                        const finalIdx = (foundIdx >= 0) ? foundIdx : foundIdx2;
+                                        console.debug('matched alias idx', foundIdx, 'fallback two-char idx', foundIdx2, 'final', finalIdx);
+                                        if (finalIdx >= 0) {
+                                            selectEl.selectedIndex = finalIdx;
+                                            if (locNameEl) locNameEl.textContent = cities[finalIdx].label;
+                                            renderWeather(cities[finalIdx].data);
+                                            if (gs) { gs.textContent = `已定位（名稱比對）: ${cities[finalIdx].label}`; gs.style.display='inline-block'; setTimeout(()=>gs.style.display='none',6000); }
                                         } else {
                                             selectEl.selectedIndex = defaultIdx >= 0 ? defaultIdx : 0;
                                             renderWeather(cities[selectEl.selectedIndex].data);
+                                            if (gs) { gs.textContent = '定位成功但無法配對城市資料；使用預設。'; gs.style.display='inline-block'; setTimeout(()=>gs.style.display='none',6000); }
                                         }
                                     } else {
                                         selectEl.selectedIndex = defaultIdx >= 0 ? defaultIdx : 0;
