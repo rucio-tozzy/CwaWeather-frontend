@@ -292,7 +292,8 @@
     </div>
 
     <script>
-        const API_URL = "https://cwa-backend-api.zeabur.app/api/weather/kaohsiung";
+        // 換成新的後端 endpoint（回傳所有縣市或更完整資料）
+        const API_URL = "https://rucio-tozzy-cwaweather-backend.zeabur.app/api/weather/all";
 
         function getWeatherIcon(weather) {
             if (!weather) return "🌊";
@@ -333,6 +334,36 @@
             if (hour >= 14 && hour < 18) return "下午";
             if (hour >= 18 && hour < 23) return "晚上";
             return "深夜";
+        }
+
+        function pickCityData(allData, preferred = /高雄|kaohsiung/i) {
+            if (!allData) return null;
+            if (allData.forecasts) return allData;
+
+            if (typeof allData === 'object' && !Array.isArray(allData)) {
+                for (const k of Object.keys(allData)) {
+                    if (preferred.test(k)) return allData[k];
+                }
+
+                for (const k of Object.keys(allData)) {
+                    const v = allData[k];
+                    if (!v) continue;
+                    if (v.forecasts) return v;
+                    if ((v.city && preferred.test(v.city)) || (v.location && preferred.test(v.location))) return v;
+                }
+            }
+
+            if (Array.isArray(allData)) {
+                for (const item of allData) {
+                    if (!item) continue;
+                    if (item.forecasts && ((item.city && preferred.test(item.city)) || (item.location && preferred.test(item.location)))) return item;
+                }
+                const first = allData.find(x => x && x.forecasts);
+                if (first) return first;
+                return allData[0];
+            }
+
+            return null;
         }
 
         function renderWeather(data) {
@@ -402,7 +433,12 @@
             const dayIndex = now.getDay();
             const days = ["週日", "週一", "週二", "週三", "週四", "週五", "週六"];
 
-            document.getElementById('updateTime').textContent = `${month}月${date}日 ${days[dayIndex]}`;
+            let place = '';
+            if (data.city) place = data.city;
+            else if (data.locationName) place = data.locationName;
+            else if (data.name) place = data.name;
+
+            document.getElementById('updateTime').textContent = `${place ? place + ' • ' : ''}${month}月${date}日 ${days[dayIndex]}`;
         }
 
         async function fetchWeather() {
@@ -418,7 +454,9 @@
                 const [_, json] = await Promise.all([delayPromise, fetchPromise]);
 
                 if (json.success) {
-                    renderWeather(json.data);
+                    const chosen = pickCityData(json.data) || json.data;
+                    if (!chosen || !chosen.forecasts) throw new Error('找不到適合的城市資料');
+                    renderWeather(chosen);
 
                     // 資料處理好後，隱藏 Loading，顯示主畫面
                     document.getElementById('loading').style.display = 'none';
