@@ -86,12 +86,19 @@
             font-size: 0.8rem;
             color: #fffbe9;
             opacity: 0.95;
-            margin-left: 10px;
+            /* 顯示為固定置中 Toast，避免擠壓右側日期 */
+            position: fixed;
+            left: 50%;
+            bottom: 18px;
+            transform: translateX(-50%) translateY(8px);
             background: linear-gradient(90deg, rgba(217,180,74,0.14), rgba(0,0,0,0.08));
-            padding: 4px 8px;
-            border-radius: 8px;
+            padding: 6px 12px;
+            border-radius: 10px;
             border: 1px solid rgba(217,180,74,0.18);
             display: none;
+            z-index: 9999;
+            pointer-events: none;
+            transition: opacity 180ms ease, transform 180ms ease;
         }
 
         /* 城市下拉 */
@@ -130,6 +137,8 @@
             .status-bar > div:first-child { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
             .location-pill { transform: none; font-size: 1rem; }
             .city-select { display: block !important; width: calc(100% - 12px); margin-left: 0; margin-top: 4px; min-width: 0; padding-left:12px; padding-right:44px }
+            /* small screens: keep geo-status overlay so it doesn't shift layout */
+            .geo-status { position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%) translateY(8px); display: none; }
             .update-pill { margin-left: 0; }
             /* 手機版：讓 location pill 更乾淨，隱藏或縮小日之呼吸文字 */
             .location-pill { padding: 6px 10px; gap:6px; }
@@ -588,7 +597,7 @@
                         </div>
                     `;
                         const gs = document.getElementById('geoStatus');
-                        if (gs) { gs.textContent = '定位成功'; gs.style.display='inline-block'; setTimeout(()=>gs.style.display='none',6000); }
+                         if (gs) { gs.textContent = '定位成功'; gs.style.display='inline-block'; gs.style.opacity=1; gs.style.transform='translateX(-50%) translateY(0)'; setTimeout(()=>{ gs.style.opacity=0; gs.style.transform='translateX(-50%) translateY(-8px)'; setTimeout(()=>gs.style.display='none',180); },1200); }
 
             // 2. 渲染稍後預報 (包含明天判斷)
             const scrollContainer = document.getElementById('futureForecasts');
@@ -676,7 +685,7 @@
                                     selectEl.selectedIndex = bestIdx;
                                     if (locNameEl) locNameEl.textContent = cities[bestIdx].label;
                                     renderWeather(cities[bestIdx].data);
-                                    if (gs) { gs.textContent = `已定位：${cities[bestIdx].label} （距離 ${bestDist.toFixed(1)} km）`; gs.style.display='inline-block'; setTimeout(()=>gs.style.display='none',6000); }
+                                     if (gs) { gs.textContent = `已定位：${cities[bestIdx].label} （距離 ${bestDist.toFixed(1)} km）`; gs.style.display='inline-block'; gs.style.opacity=1; gs.style.transform='translateX(-50%) translateY(0)'; setTimeout(()=>{ gs.style.opacity=0; gs.style.transform='translateX(-50%) translateY(8px)'; setTimeout(()=>gs.style.display='none',180); },1200); }
                                 } else {
                                     // 若沒可比對座標資料，先印出城市列表看看有哪些 label
                                     console.debug('no coords found among cities; will try known-city fallback. city labels:', cities.map(c=>c.label));
@@ -746,11 +755,11 @@
                                             selectEl.selectedIndex = finalIdx;
                                             if (locNameEl) locNameEl.textContent = cities[finalIdx].label;
                                             renderWeather(cities[finalIdx].data);
-                                            if (gs) { gs.textContent = `已定位（名稱比對）: ${cities[finalIdx].label}`; gs.style.display='inline-block'; setTimeout(()=>gs.style.display='none',6000); }
+                                             if (gs) { gs.textContent = `已定位（名稱比對）: ${cities[finalIdx].label}`; gs.style.display='inline-block'; gs.style.opacity=1; gs.style.transform='translateX(-50%) translateY(0)'; setTimeout(()=>{ gs.style.opacity=0; gs.style.transform='translateX(-50%) translateY(8px)'; setTimeout(()=>gs.style.display='none',180); },1200); }
                                         } else {
                                             selectEl.selectedIndex = defaultIdx >= 0 ? defaultIdx : 0;
                                             renderWeather(cities[selectEl.selectedIndex].data);
-                                            if (gs) { gs.textContent = '定位成功但無法配對城市資料；使用預設。'; gs.style.display='inline-block'; setTimeout(()=>gs.style.display='none',6000); }
+                                             if (gs) { gs.textContent = '定位成功但無法配對城市資料；使用預設。'; gs.style.display='inline-block'; gs.style.opacity=1; gs.style.transform='translateX(-50%) translateY(0)'; setTimeout(()=>{ gs.style.opacity=0; gs.style.transform='translateX(-50%) translateY(8px)'; setTimeout(()=>gs.style.display='none',180); },1200); }
                                         }
                                     } else {
                                         selectEl.selectedIndex = defaultIdx >= 0 ? defaultIdx : 0;
