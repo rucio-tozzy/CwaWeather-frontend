@@ -68,6 +68,10 @@
             transform: rotate(-2deg);
             border: 2px solid rgba(217,180,74,0.9);
             box-shadow: 0 4px 0 rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-height: 36px;
         }
 
         .update-pill {
@@ -77,6 +81,49 @@
             padding: 4px 10px;
             border-radius: 12px;
         }
+
+        /* 城市下拉 */
+        .city-select {
+            margin-left: 12px;
+            /* 跟 location-pill 融合：綠色漸層、奶色字體、金色邊線 */
+            background: linear-gradient(90deg, var(--dm-green), rgba(11,90,56,0.9));
+            color: #fffbe9;
+            border: 1px solid rgba(217,180,74,0.9);
+            padding: 6px 34px 6px 10px; /* 右側留給箭頭 */
+            border-radius: 12px;
+            font-weight: 800;
+            font-family: inherit;
+            outline: none;
+            -webkit-appearance: none;
+            appearance: none;
+            min-width: 140px;
+            cursor: pointer;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 24 24'%3E%3Cpath d='M6 9l6 6 6-6' stroke='%23D9B44A' stroke-width='2.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 10px center;
+        }
+
+        .city-select option {
+            /* 改成淺底深字，提升可讀性（與 location-pill 相容） */
+            background: var(--dm-cream);
+            color: var(--dm-charcoal);
+            padding: 8px 10px;
+            font-weight: 700;
+        }
+
+        /* RWD: small screens — select becomes full-width and stacked */
+        @media (max-width: 480px) {
+            .status-bar { padding: 12px; gap: 6px; }
+            .status-bar > div:first-child { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+            .location-pill { transform: none; font-size: 1rem; }
+            .city-select { display: block !important; width: calc(100% - 12px); margin-left: 0; margin-top: 4px; min-width: 0; padding-left:12px; padding-right:44px }
+            .update-pill { margin-left: 0; }
+        }
+
+        .location-pill .loc-icon { margin-left: 2px; }
+        .location-pill .loc-name { font-weight: 900; }
+        .location-pill .loc-suffix { font-weight: 700; opacity: 0.95; font-size:0.95rem; color:#fff7e6 }
 
         .container {
             padding: 20px;
@@ -275,7 +322,16 @@
         <div class="checkered-band" aria-hidden="true"></div>
     </div>
     <div class="status-bar">
-        <div class="location-pill">📍 高雄 — 日之呼吸</div>
+            <div style="display:flex; align-items:center; gap:8px;">
+            <div class="location-pill">
+                <span class="loc-icon">📍</span>
+                <span id="locName" class="loc-name">高雄</span>
+                <select id="citySelect" class="city-select" aria-label="選擇城市" style="display:none">
+                    <option>載入城市...</option>
+                </select>
+                <span class="loc-suffix"> — 日之呼吸</span>
+            </div>
+        </div>
         <div id="updateTime" class="update-pill">更新中...</div>
     </div>
 
@@ -366,6 +422,37 @@
             return null;
         }
 
+        function listCitiesFromAllData(allData) {
+            const out = [];
+            if (!allData) return out;
+
+            if (allData.forecasts) {
+                out.push({ id: '_single', label: allData.city || allData.locationName || allData.name || '當地', data: allData });
+                return out;
+            }
+
+            if (Array.isArray(allData)) {
+                allData.forEach((it, idx) => {
+                    if (!it) return;
+                    const label = it.city || it.locationName || it.name || `城市 ${idx + 1}`;
+                    out.push({ id: idx + '', label, data: it });
+                });
+                return out;
+            }
+
+            if (typeof allData === 'object') {
+                Object.keys(allData).forEach(k => {
+                    const v = allData[k];
+                    if (!v) return;
+                    const label = (v.city || v.locationName || v.name || k);
+                    out.push({ id: k, label, data: v });
+                });
+                return out;
+            }
+
+            return out;
+        }
+
         function renderWeather(data) {
             const forecasts = data.forecasts;
             const current = forecasts[0];
@@ -433,12 +520,8 @@
             const dayIndex = now.getDay();
             const days = ["週日", "週一", "週二", "週三", "週四", "週五", "週六"];
 
-            let place = '';
-            if (data.city) place = data.city;
-            else if (data.locationName) place = data.locationName;
-            else if (data.name) place = data.name;
-
-            document.getElementById('updateTime').textContent = `${place ? place + ' • ' : ''}${month}月${date}日 ${days[dayIndex]}`;
+            // 右上僅顯示日期（不顯示地區資訊）
+            document.getElementById('updateTime').textContent = `${month}月${date}日 ${days[dayIndex]}`;
         }
 
         async function fetchWeather() {
@@ -454,9 +537,39 @@
                 const [_, json] = await Promise.all([delayPromise, fetchPromise]);
 
                 if (json.success) {
-                    const chosen = pickCityData(json.data) || json.data;
-                    if (!chosen || !chosen.forecasts) throw new Error('找不到適合的城市資料');
-                    renderWeather(chosen);
+                    // 支援 /api/weather/all 回傳：若為多城市資料，產生下拉選單
+                    const cities = listCitiesFromAllData(json.data);
+                    const selectEl = document.getElementById('citySelect');
+                    const locNameEl = document.getElementById('locName');
+
+                    if (cities.length > 1) {
+                        selectEl.style.display = 'inline-block';
+                        locNameEl.style.display = 'none';
+                        selectEl.innerHTML = cities.map((c, i) => `<option value="${i}">${c.label}</option>`).join('');
+                        // 優先選擇高雄（若存在）
+                        const preferred = cities.findIndex(c => /高雄|kaohsiung/i.test(c.label) || (c.data && c.data.city && /高雄|kaohsiung/i.test(c.data.city)));
+                        selectEl.selectedIndex = preferred >= 0 ? preferred : 0;
+                        // render initial
+                        renderWeather(cities[selectEl.selectedIndex].data);
+
+                        selectEl.onchange = () => {
+                            const idx = parseInt(selectEl.value, 10);
+                            if (cities[idx]) renderWeather(cities[idx].data);
+                        };
+                    } else if (cities.length === 1) {
+                        selectEl.style.display = 'none';
+                        locNameEl.style.display = 'inline';
+                        locNameEl.textContent = cities[0].label;
+                        renderWeather(cities[0].data);
+                    } else {
+                        // fallback: try to pick a single city
+                        const chosen = pickCityData(json.data) || json.data;
+                        if (!chosen || !chosen.forecasts) throw new Error('找不到適合的城市資料');
+                        selectEl.style.display = 'none';
+                        locNameEl.style.display = 'inline';
+                        locNameEl.textContent = chosen.city || chosen.locationName || chosen.name || locNameEl.textContent;
+                        renderWeather(chosen);
+                    }
 
                     // 資料處理好後，隱藏 Loading，顯示主畫面
                     document.getElementById('loading').style.display = 'none';
